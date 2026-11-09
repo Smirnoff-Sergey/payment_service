@@ -1,5 +1,7 @@
 """Shared test data and fakes."""
 
+from datetime import timedelta
+
 import httpx
 
 from app.models import Payment
@@ -11,6 +13,9 @@ PAYMENT_BODY = {
     "metadata": {"order_id": 42},
     "webhook_url": "http://webhook.test/hook",
 }
+
+
+KEY_TTL = timedelta(hours=24)
 
 
 class FakeBroker:

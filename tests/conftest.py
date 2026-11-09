@@ -8,6 +8,12 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 
+API_KEY = "test-api-key"
+WEBHOOK_SECRET = "test-webhook-secret"
+# Settings has no defaults for secrets; set them before app modules read the settings.
+os.environ.setdefault("API_KEY", API_KEY)
+os.environ.setdefault("WEBHOOK_SECRET", WEBHOOK_SECRET)
+
 import asyncpg
 import pytest
 from alembic import command
@@ -22,8 +28,6 @@ from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory, get_session
 from app.schemas import PaymentCreate
 from tests.helpers import PAYMENT_BODY
-
-API_KEY = "test-api-key"
 
 
 async def _recreate_database(url: str) -> None:
@@ -57,7 +61,7 @@ async def engine(database_url: str) -> AsyncIterator[AsyncEngine]:
     # NullPool: every test runs in its own event loop, pooled connections must not outlive it.
     engine = create_engine(database_url, poolclass=NullPool)
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE payments, outbox"))
+        await conn.execute(text("TRUNCATE payments, outbox, idempotency_keys"))
     yield engine
     await engine.dispose()
 
@@ -74,7 +78,7 @@ async def client(sessions: async_sessionmaker[AsyncSession]) -> AsyncIterator[As
             yield session
 
     app.dependency_overrides[get_session] = override_session
-    app.dependency_overrides[get_settings] = lambda: Settings(api_key=API_KEY)
+    app.dependency_overrides[get_settings] = lambda: Settings(api_key=API_KEY, webhook_secret=WEBHOOK_SECRET)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test", headers={"X-API-Key": API_KEY}
     ) as client:

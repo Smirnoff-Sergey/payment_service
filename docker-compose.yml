@@ -7,6 +7,12 @@ x-app: &app
   environment:
     DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments
     RABBIT_URL: amqp://guest:guest@rabbitmq:5672/
+    # The demo receiver lives in the internal network, exempt it from the SSRF guard.
+    WEBHOOK_ALLOWED_HOSTS: webhook-mock
+  # Mounted as /run/secrets/<name> and read by app.config.Settings.
+  secrets:
+    - api_key
+    - webhook_secret
   restart: unless-stopped
 
 services:
@@ -87,6 +93,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+secrets:
+  api_key:
+    file: ./secrets/api_key
+  webhook_secret:
+    file: ./secrets/webhook_secret
 
 volumes:
   postgres-data:

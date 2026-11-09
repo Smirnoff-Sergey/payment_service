@@ -6,7 +6,7 @@ import pytest
 from app.consumer.processor import PaymentNotFoundError, PaymentProcessor
 from app.models import Payment, PaymentStatus
 from app.services.payments import create_payment
-from tests.helpers import FakeGateway, FakeNotifier
+from tests.helpers import KEY_TTL, FakeGateway, FakeNotifier
 
 
 async def load(sessions, payment_id) -> Payment:
@@ -17,7 +17,7 @@ async def load(sessions, payment_id) -> Payment:
 @pytest.fixture
 async def payment(sessions, payment_data) -> Payment:
     async with sessions() as session:
-        return await create_payment(session, payment_data, "key-1")
+        return await create_payment(session, payment_data, "key-1", KEY_TTL)
 
 
 @pytest.mark.parametrize(("charged", "status"), [(True, PaymentStatus.SUCCEEDED), (False, PaymentStatus.FAILED)])

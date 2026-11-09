@@ -5,6 +5,9 @@ instances can run side by side. An event is marked as published only after the
 broker has confirmed it; if publishing fails the transaction is rolled back and
 the event is retried on the next iteration (at-least-once delivery, duplicates
 are handled by the idempotent consumer).
+
+Every `cleanup_interval` seconds the relay also deletes old published events and
+expired idempotency keys (app.relay.cleanup).
 """
 
 import asyncio
@@ -17,10 +20,11 @@ from faststream.rabbit import RabbitBroker
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db import session_factory
 from app.messaging.topology import declare_topology, payments_exchange
 from app.models import OutboxEvent
+from app.relay.cleanup import delete_expired_idempotency_keys, delete_published_events
 
 logger = logging.getLogger("outbox_relay")
 
@@ -66,7 +70,11 @@ async def run() -> None:
         await declare_topology(broker, settings.max_retries, settings.retry_base_delay)
         logger.info("Outbox relay started")
 
+        next_cleanup = loop.time()
         while not stop.is_set():
+            if loop.time() >= next_cleanup:
+                await _cleanup_once(settings)
+                next_cleanup = loop.time() + settings.cleanup_interval
             if not await _relay_once(broker, settings.outbox_batch_size):
                 # Nothing published (idle or broker/DB error): wait before polling again.
                 with contextlib.suppress(TimeoutError):
@@ -84,6 +92,19 @@ async def _relay_once(broker: RabbitBroker, batch_size: int) -> int:
     if published:
         logger.info("Published %d outbox event(s)", published)
     return published
+
+
+async def _cleanup_once(settings: Settings) -> None:
+    try:
+        events = await delete_published_events(
+            session_factory, settings.outbox_retention, settings.cleanup_batch_size
+        )
+        keys = await delete_expired_idempotency_keys(session_factory, settings.cleanup_batch_size)
+    except Exception:
+        logger.exception("Cleanup failed, will retry")
+        return
+    if events or keys:
+        logger.info("Cleanup: deleted %d published event(s), %d expired idempotency key(s)", events, keys)
 
 
 if __name__ == "__main__":

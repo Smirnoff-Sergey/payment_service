@@ -5,7 +5,7 @@ from app.messaging.topology import PAYMENTS_NEW_ROUTING_KEY, payments_exchange
 from app.models import OutboxEvent
 from app.relay.main import publish_batch
 from app.services.payments import create_payment
-from tests.helpers import FakeBroker
+from tests.helpers import KEY_TTL, FakeBroker
 
 
 async def load_event(sessions) -> OutboxEvent:
@@ -15,7 +15,7 @@ async def load_event(sessions) -> OutboxEvent:
 
 async def test_publish_batch_publishes_and_marks_events(sessions, payment_data):
     async with sessions() as session:
-        payment = await create_payment(session, payment_data, "key-1")
+        payment = await create_payment(session, payment_data, "key-1", KEY_TTL)
     broker = FakeBroker()
 
     assert await publish_batch(sessions, broker, batch_size=10) == 1
@@ -33,7 +33,7 @@ async def test_publish_batch_publishes_and_marks_events(sessions, payment_data):
 
 async def test_publish_failure_keeps_events_pending(sessions, payment_data):
     async with sessions() as session:
-        await create_payment(session, payment_data, "key-1")
+        await create_payment(session, payment_data, "key-1", KEY_TTL)
 
     with pytest.raises(ConnectionError):
         await publish_batch(sessions, FakeBroker(fail=True), batch_size=10)

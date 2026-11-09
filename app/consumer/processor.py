@@ -6,6 +6,7 @@ from typing import Protocol
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.consumer.errors import PermanentProcessingError
 from app.models import Payment, PaymentStatus
 from app.schemas import WebhookPayload
 
@@ -20,8 +21,8 @@ class Notifier(Protocol):
     async def send(self, url: str, payload: WebhookPayload) -> None: ...
 
 
-class PaymentNotFoundError(Exception):
-    """Permanent error: retrying will not help."""
+class PaymentNotFoundError(PermanentProcessingError):
+    """The event refers to a payment that does not exist."""
 
 
 class PaymentProcessor:

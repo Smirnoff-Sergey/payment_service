@@ -1,14 +1,15 @@
 import hashlib
 import json
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.messaging.topology import PAYMENTS_NEW_ROUTING_KEY
-from app.models import OutboxEvent, Payment
+from app.models import IdempotencyKey, OutboxEvent, Payment
 from app.schemas import PaymentCreate, PaymentEvent
 
 PAYMENT_CREATED_EVENT = "payment.created"
@@ -26,17 +27,45 @@ def request_fingerprint(data: PaymentCreate) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-async def create_payment(session: AsyncSession, data: PaymentCreate, idempotency_key: str) -> Payment:
+async def create_payment(
+    session: AsyncSession, data: PaymentCreate, idempotency_key: str, key_ttl: timedelta
+) -> Payment:
     """Create a payment and its outbox event atomically.
 
-    Repeating a request with the same key and body returns the existing payment;
-    the same key with a different body raises IdempotencyConflictError.
+    The key is reserved for `key_ttl`. While it is alive, repeating a request with
+    the same key and body returns the existing payment, and the same key with a
+    different body raises IdempotencyConflictError. An expired key is released and
+    creates a new payment.
     """
     fingerprint = request_fingerprint(data)
     payment_id = uuid.uuid4()
 
     async with session.begin():
-        stmt = (
+        await session.execute(
+            delete(IdempotencyKey).where(
+                IdempotencyKey.key == idempotency_key, IdempotencyKey.expires_at <= func.now()
+            )
+        )
+        # Concurrent requests with the same key wait here for the first one to commit.
+        claimed = await session.scalar(
+            insert(IdempotencyKey)
+            .values(
+                key=idempotency_key,
+                request_hash=fingerprint,
+                payment_id=payment_id,
+                expires_at=func.now() + key_ttl,
+            )
+            .on_conflict_do_nothing(index_elements=[IdempotencyKey.key])
+            .returning(IdempotencyKey.key)
+        )
+
+        if claimed is None:
+            existing = await session.get(IdempotencyKey, idempotency_key)
+            if existing is None or existing.request_hash != fingerprint:
+                raise IdempotencyConflictError(idempotency_key)
+            return await session.get_one(Payment, existing.payment_id)
+
+        payment = await session.scalar(
             insert(Payment)
             .values(
                 id=payment_id,
@@ -45,21 +74,10 @@ async def create_payment(session: AsyncSession, data: PaymentCreate, idempotency
                 description=data.description,
                 metadata_=data.metadata,
                 idempotency_key=idempotency_key,
-                request_hash=fingerprint,
                 webhook_url=str(data.webhook_url),
             )
-            .on_conflict_do_nothing(index_elements=[Payment.idempotency_key])
             .returning(Payment)
         )
-        payment = (await session.scalars(stmt)).one_or_none()
-
-        if payment is None:
-            existing = await session.scalar(
-                select(Payment).where(Payment.idempotency_key == idempotency_key)
-            )
-            if existing is None or existing.request_hash != fingerprint:
-                raise IdempotencyConflictError(idempotency_key)
-            return existing
 
         event_id = uuid.uuid4()
         session.add(

@@ -10,7 +10,8 @@ import logging
 from faststream.rabbit import RabbitBroker, RabbitMessage
 from pydantic import ValidationError
 
-from app.consumer.processor import PaymentNotFoundError, PaymentProcessor
+from app.consumer.errors import PermanentProcessingError
+from app.consumer.processor import PaymentProcessor
 from app.messaging.topology import RETRY_COUNT_HEADER, retry_exchange, retry_routing_key
 from app.schemas import PaymentEvent
 
@@ -33,8 +34,8 @@ class PaymentMessageHandler:
 
         try:
             await self._processor.process(event.payment_id)
-        except PaymentNotFoundError:
-            logger.error("Payment %s not found, sending to DLQ", event.payment_id)
+        except PermanentProcessingError as exc:
+            logger.error("Permanent failure for payment %s (%s), sending to DLQ", event.payment_id, exc)
             await msg.reject()
             return
         except Exception:

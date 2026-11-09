@@ -6,6 +6,7 @@ import pytest
 
 from app.consumer.handler import PaymentMessageHandler
 from app.consumer.processor import PaymentNotFoundError
+from app.consumer.ssrf import WebhookBlockedError
 from app.messaging.topology import (
     RETRY_COUNT_HEADER,
     retry_delay,
@@ -92,7 +93,7 @@ async def test_retry_publish_failure_requeues():
 
 @pytest.mark.parametrize(
     ("body", "error"),
-    [(b"not json", None), (event_body(), PaymentNotFoundError())],
+    [(b"not json", None), (event_body(), PaymentNotFoundError()), (event_body(), WebhookBlockedError())],
 )
 async def test_permanent_errors_go_to_dlq(body, error):
     msg = FakeMessage(body)

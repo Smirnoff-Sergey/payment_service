@@ -1,10 +1,12 @@
 import asyncio
 import uuid
+from datetime import timedelta
 
-from sqlalchemy import func, select
+import pytest
+from sqlalchemy import func, select, update
 
 from app.messaging.topology import PAYMENTS_NEW_ROUTING_KEY
-from app.models import OutboxEvent, Payment
+from app.models import IdempotencyKey, OutboxEvent, Payment
 from tests.helpers import PAYMENT_BODY as BODY
 
 
@@ -65,6 +67,27 @@ async def test_same_idempotency_key_with_other_body_conflicts(client, sessions):
     assert await count(sessions, Payment) == 1
 
 
+async def test_expired_idempotency_key_can_be_reused(client, sessions):
+    headers = idempotency_headers("key-1")
+    first = (await client.post("/api/v1/payments", json=BODY, headers=headers)).json()
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(IdempotencyKey).values(expires_at=func.now() - timedelta(seconds=1))
+        )
+
+    # Even a different body is accepted: the old reservation is gone.
+    response = await client.post("/api/v1/payments", json={**BODY, "amount": "1.00"}, headers=headers)
+
+    assert response.status_code == 202
+    assert response.json()["payment_id"] != first["payment_id"]
+    assert await count(sessions, Payment) == 2
+    assert await count(sessions, OutboxEvent) == 2
+    async with sessions() as session:
+        key = await session.get(IdempotencyKey, "key-1")
+    assert str(key.payment_id) == response.json()["payment_id"]
+    assert key.expires_at > key.created_at
+
+
 async def test_concurrent_requests_with_same_key_create_one_payment(client, sessions):
     headers = idempotency_headers("key-race")
     responses = await asyncio.gather(
@@ -87,6 +110,19 @@ async def test_create_payment_validation(client):
     ):
         response = await client.post("/api/v1/payments", json=invalid, headers=idempotency_headers())
         assert response.status_code == 422, invalid
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://localhost/hook", "http://127.0.0.1:8080/hook", "http://[::1]/hook", "http://169.254.169.254/latest"],
+)
+async def test_internal_webhook_url_is_rejected(client, sessions, url):
+    response = await client.post(
+        "/api/v1/payments", json={**BODY, "webhook_url": url}, headers=idempotency_headers()
+    )
+
+    assert response.status_code == 422
+    assert await count(sessions, Payment) == 0
 
 
 async def test_get_payment(client):

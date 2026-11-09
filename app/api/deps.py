@@ -16,7 +16,7 @@ async def verify_api_key(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> None:
     # Compare bytes: compare_digest() rejects non-ASCII str, which would turn into a 500.
-    if api_key is None or not secrets.compare_digest(api_key.encode(), settings.api_key.encode()):
+    if api_key is None or not secrets.compare_digest(api_key.encode(), settings.api_key.get_secret_value().encode()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing API key")
 
 

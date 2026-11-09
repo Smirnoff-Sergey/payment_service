@@ -27,13 +27,28 @@ class FakeBroker:
 
 
 class FakeGateway:
-    def __init__(self, result: bool = True) -> None:
-        self.result = result
-        self.calls = 0
+    """Deduplicates charges by idempotency key like a real gateway.
 
-    async def charge(self, payment: Payment) -> bool:
+    `calls` counts requests, `charges` holds the outcome per key (one debit per key).
+    With `lose_response=True` the first request is charged, but the response is
+    lost (raises), emulating a crash between the charge and storing its outcome.
+    """
+
+    def __init__(self, result: bool = True, lose_response: bool = False) -> None:
+        self.result = result
+        self.lose_response = lose_response
+        self.calls = 0
+        self.keys: list[str] = []
+        self.charges: dict[str, bool] = {}
+
+    async def charge(self, payment: Payment, idempotency_key: str) -> bool:
         self.calls += 1
-        return self.result
+        self.keys.append(idempotency_key)
+        outcome = self.charges.setdefault(idempotency_key, self.result)
+        if self.lose_response:
+            self.lose_response = False
+            raise ConnectionError("gateway response lost")
+        return outcome
 
 
 class FakeNotifier:

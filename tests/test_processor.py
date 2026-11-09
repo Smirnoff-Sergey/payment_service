@@ -65,6 +65,33 @@ async def test_duplicate_delivery_is_noop(sessions, payment):
     assert len(notifier.sent) == 1
 
 
+async def test_gateway_receives_payment_id_as_idempotency_key(sessions, payment):
+    gateway = FakeGateway()
+
+    await PaymentProcessor(sessions, gateway, FakeNotifier()).process(payment.id)
+
+    assert gateway.keys == [str(payment.id)]
+
+
+async def test_retry_after_lost_gateway_response_does_not_charge_twice(sessions, payment):
+    gateway = FakeGateway(result=False, lose_response=True)
+
+    with pytest.raises(ConnectionError):
+        await PaymentProcessor(sessions, gateway, FakeNotifier()).process(payment.id)
+    assert (await load(sessions, payment.id)).status == PaymentStatus.PENDING
+
+    # The gateway changes its mind for new keys, but the retry reuses the old one.
+    gateway.result = True
+    notifier = FakeNotifier()
+    await PaymentProcessor(sessions, gateway, notifier).process(payment.id)
+
+    assert gateway.calls == 2
+    assert gateway.keys == [str(payment.id)] * 2
+    assert gateway.charges == {str(payment.id): False}
+    assert (await load(sessions, payment.id)).status == PaymentStatus.FAILED
+    assert notifier.sent[0][1].status == PaymentStatus.FAILED
+
+
 async def test_unknown_payment(sessions):
     with pytest.raises(PaymentNotFoundError):
         await PaymentProcessor(sessions, FakeGateway(), FakeNotifier()).process(uuid.uuid4())

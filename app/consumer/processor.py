@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class Gateway(Protocol):
-    async def charge(self, payment: Payment) -> bool: ...
+    async def charge(self, payment: Payment, idempotency_key: str) -> bool: ...
 
 
 class Notifier(Protocol):
@@ -29,8 +29,9 @@ class PaymentProcessor:
 
     The message may be delivered more than once (outbox at-least-once, retries),
     so every step is guarded by the persisted state:
-      * the gateway is called only while the payment is `pending`, and the status
-        is switched with a conditional UPDATE, so only one outcome is stored;
+      * the gateway is called only while the payment is `pending`, with the payment
+        id as the idempotency key, so a repeated call cannot charge twice;
+      * the status is switched with a conditional UPDATE, so only one outcome is stored;
       * the webhook is sent until `webhook_delivered_at` is set, so a retry after
         a failed webhook re-sends the notification without charging again.
     """
@@ -55,7 +56,10 @@ class PaymentProcessor:
             await self._notify(payment)
 
     async def _charge(self, payment: Payment) -> Payment:
-        succeeded = await self._gateway.charge(payment)
+        # The gateway deduplicates by this key, so a repeated call (crash before the
+        # UPDATE below, concurrent delivery) returns the same outcome without a
+        # second debit.
+        succeeded = await self._gateway.charge(payment, idempotency_key=str(payment.id))
         status = PaymentStatus.SUCCEEDED if succeeded else PaymentStatus.FAILED
 
         async with self._sessions() as session, session.begin():

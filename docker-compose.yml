@@ -1,0 +1,93 @@
+x-app: &app
+  build: .
+  image: payment-service:latest
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments
+    RABBIT_URL: amqp://guest:guest@rabbitmq:5672/
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments
+      POSTGRES_DB: payments
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrations:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+
+  outbox-relay:
+    <<: *app
+    command: ["python", "-m", "app.relay.main"]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  consumer:
+    <<: *app
+    command: ["faststream", "run", "app.consumer.main:app"]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  webhook-mock:
+    <<: *app
+    command: ["uvicorn", "app.webhook_mock:app", "--host", "0.0.0.0", "--port", "9000"]
+    ports:
+      - "9000:9000"
+
+  tests:
+    <<: *app
+    profiles: ["test"]
+    restart: "no"
+    command: ["pytest", "-v", "-p", "no:cacheprovider"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments_test
+      API_KEY: test-api-key
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

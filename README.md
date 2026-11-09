@@ -23,7 +23,7 @@
 | `outbox-relay` | Публикует неотправленные события из `outbox` в RabbitMQ (`app/relay`) |
 | `consumer` | Один обработчик (`app/consumer`): эмуляция шлюза → статус в БД → webhook |
 | `migrations` | Одноразовый `alembic upgrade head` перед стартом остальных сервисов |
-| `webhook-mock` | Демонстрационный приёмник webhook (не часть сервиса) |
+| `webhook-mock` | Демонстрационный приёмник webhook (`tools/webhook_mock.py`, не часть сервиса) |
 | `postgres`, `rabbitmq` | Инфраструктура (management UI RabbitMQ: http://localhost:15672, guest/guest) |
 
 ### Гарантии доставки
@@ -127,10 +127,11 @@ app/
   api/            FastAPI: роуты, проверка X-API-Key
   services/       создание платежа: идемпотентность + outbox
   relay/          outbox → RabbitMQ
-  consumer/       обработчик, эмуляция шлюза, отправка webhook
+  consumer/       обработчик (retry/DLQ), эмуляция шлюза, отправка webhook
   messaging/      топология RabbitMQ (обменники, очереди, retry, DLQ)
   models.py       SQLAlchemy-модели payments и outbox
   schemas.py      Pydantic-схемы API и сообщений
 migrations/       Alembic
 tests/
+tools/            webhook-mock для демонстрации
 ```

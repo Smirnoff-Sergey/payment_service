@@ -73,7 +73,7 @@ services:
 
   webhook-mock:
     <<: *app
-    command: ["uvicorn", "app.webhook_mock:app", "--host", "0.0.0.0", "--port", "9000"]
+    command: ["uvicorn", "tools.webhook_mock:app", "--host", "0.0.0.0", "--port", "9000"]
     ports:
       - "9000:9000"
 
@@ -84,7 +84,6 @@ services:
     command: ["pytest", "-v", "-p", "no:cacheprovider"]
     environment:
       DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments_test
-      API_KEY: test-api-key
     depends_on:
       postgres:
         condition: service_healthy

@@ -5,17 +5,10 @@ from sqlalchemy import func, select
 
 from app.messaging.topology import PAYMENTS_NEW_ROUTING_KEY
 from app.models import OutboxEvent, Payment
-
-BODY = {
-    "amount": "100.50",
-    "currency": "RUB",
-    "description": "Order #42",
-    "metadata": {"order_id": 42},
-    "webhook_url": "http://webhook.test/hook",
-}
+from tests.helpers import PAYMENT_BODY as BODY
 
 
-def idem(key: str | None = None) -> dict[str, str]:
+def idempotency_headers(key: str | None = None) -> dict[str, str]:
     return {"Idempotency-Key": key or str(uuid.uuid4())}
 
 
@@ -25,15 +18,18 @@ async def count(sessions, model) -> int:
 
 
 async def test_requires_api_key(client):
-    response = await client.post("/api/v1/payments", json=BODY, headers={**idem(), "X-API-Key": ""})
-    assert response.status_code == 401
+    for api_key in ("", "wrong", "ключ".encode()):  # non-ASCII must not cause a 500
+        response = await client.post(
+            "/api/v1/payments", json=BODY, headers={**idempotency_headers(), "X-API-Key": api_key}
+        )
+        assert response.status_code == 401, api_key
 
     response = await client.get(f"/api/v1/payments/{uuid.uuid4()}", headers={"X-API-Key": "wrong"})
     assert response.status_code == 401
 
 
 async def test_create_payment_writes_payment_and_outbox_event(client, sessions):
-    response = await client.post("/api/v1/payments", json=BODY, headers=idem())
+    response = await client.post("/api/v1/payments", json=BODY, headers=idempotency_headers())
 
     assert response.status_code == 202
     data = response.json()
@@ -49,9 +45,10 @@ async def test_create_payment_writes_payment_and_outbox_event(client, sessions):
 
 
 async def test_same_idempotency_key_returns_existing_payment(client, sessions):
-    headers = idem("key-1")
+    headers = idempotency_headers("key-1")
     first = await client.post("/api/v1/payments", json=BODY, headers=headers)
-    second = await client.post("/api/v1/payments", json=BODY, headers=headers)
+    # The same amount written differently is the same request.
+    second = await client.post("/api/v1/payments", json={**BODY, "amount": "100.5"}, headers=headers)
 
     assert second.status_code == 202
     assert second.json() == first.json()
@@ -60,7 +57,7 @@ async def test_same_idempotency_key_returns_existing_payment(client, sessions):
 
 
 async def test_same_idempotency_key_with_other_body_conflicts(client, sessions):
-    headers = idem("key-1")
+    headers = idempotency_headers("key-1")
     await client.post("/api/v1/payments", json=BODY, headers=headers)
     response = await client.post("/api/v1/payments", json={**BODY, "amount": "1.00"}, headers=headers)
 
@@ -69,7 +66,7 @@ async def test_same_idempotency_key_with_other_body_conflicts(client, sessions):
 
 
 async def test_concurrent_requests_with_same_key_create_one_payment(client, sessions):
-    headers = idem("key-race")
+    headers = idempotency_headers("key-race")
     responses = await asyncio.gather(
         *(client.post("/api/v1/payments", json=BODY, headers=headers) for _ in range(5))
     )
@@ -88,12 +85,14 @@ async def test_create_payment_validation(client):
         {**BODY, "amount": "1.001"},
         {**BODY, "webhook_url": "not-a-url"},
     ):
-        response = await client.post("/api/v1/payments", json=invalid, headers=idem())
+        response = await client.post("/api/v1/payments", json=invalid, headers=idempotency_headers())
         assert response.status_code == 422, invalid
 
 
 async def test_get_payment(client):
-    created = (await client.post("/api/v1/payments", json=BODY, headers=idem("key-get"))).json()
+    created = (
+        await client.post("/api/v1/payments", json=BODY, headers=idempotency_headers("key-get"))
+    ).json()
 
     response = await client.get(f"/api/v1/payments/{created['payment_id']}")
 

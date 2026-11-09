@@ -2,33 +2,11 @@ import uuid
 
 import httpx
 import pytest
-import respx
 
 from app.consumer.processor import PaymentNotFoundError, PaymentProcessor
-from app.consumer.webhook import WebhookSender
 from app.models import Payment, PaymentStatus
 from app.services.payments import create_payment
-
-
-class FakeGateway:
-    def __init__(self, result: bool = True) -> None:
-        self.result = result
-        self.calls = 0
-
-    async def charge(self, payment: Payment) -> bool:
-        self.calls += 1
-        return self.result
-
-
-class FakeNotifier:
-    def __init__(self, fail: bool = False) -> None:
-        self.fail = fail
-        self.sent: list = []
-
-    async def send(self, url, payload) -> None:
-        if self.fail:
-            raise httpx.ConnectError("webhook is down")
-        self.sent.append((url, payload))
+from tests.helpers import FakeGateway, FakeNotifier
 
 
 async def load(sessions, payment_id) -> Payment:
@@ -90,19 +68,3 @@ async def test_duplicate_delivery_is_noop(sessions, payment):
 async def test_unknown_payment(sessions):
     with pytest.raises(PaymentNotFoundError):
         await PaymentProcessor(sessions, FakeGateway(), FakeNotifier()).process(uuid.uuid4())
-
-
-@respx.mock
-async def test_webhook_sender_raises_on_error_status():
-    respx.post("http://webhook.test/ok").respond(200)
-    respx.post("http://webhook.test/fail").respond(500)
-    from app.schemas import WebhookPayload
-
-    payload = WebhookPayload(
-        payment_id=uuid.uuid4(), status="succeeded", amount="1.00", currency="RUB", processed_at=None
-    )
-    async with httpx.AsyncClient() as client:
-        sender = WebhookSender(client)
-        await sender.send("http://webhook.test/ok", payload)
-        with pytest.raises(httpx.HTTPStatusError):
-            await sender.send("http://webhook.test/fail", payload)

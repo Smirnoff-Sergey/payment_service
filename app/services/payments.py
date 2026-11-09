@@ -1,6 +1,7 @@
 import hashlib
 import json
 import uuid
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -18,7 +19,10 @@ class IdempotencyConflictError(Exception):
 
 
 def request_fingerprint(data: PaymentCreate) -> str:
-    canonical = json.dumps(data.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    body = data.model_dump(mode="json")
+    # "10", "10.0" and "10.00" are the same amount and must produce the same fingerprint.
+    body["amount"] = str(data.amount.quantize(Decimal("0.01")))
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 

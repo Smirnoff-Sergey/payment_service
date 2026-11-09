@@ -8,6 +8,7 @@ are handled by the idempotent consumer).
 """
 
 import asyncio
+import contextlib
 import logging
 import signal
 from datetime import UTC, datetime
@@ -66,20 +67,23 @@ async def run() -> None:
         logger.info("Outbox relay started")
 
         while not stop.is_set():
-            try:
-                published = await publish_batch(session_factory, broker, settings.outbox_batch_size)
-            except Exception:
-                logger.exception("Failed to publish outbox batch, will retry")
-                published = 0
-            if published:
-                logger.info("Published %d outbox event(s)", published)
-                continue
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=settings.outbox_poll_interval)
-            except TimeoutError:
-                pass
+            if not await _relay_once(broker, settings.outbox_batch_size):
+                # Nothing published (idle or broker/DB error): wait before polling again.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=settings.outbox_poll_interval)
 
     logger.info("Outbox relay stopped")
+
+
+async def _relay_once(broker: RabbitBroker, batch_size: int) -> int:
+    try:
+        published = await publish_batch(session_factory, broker, batch_size)
+    except Exception:
+        logger.exception("Failed to publish outbox batch, will retry")
+        return 0
+    if published:
+        logger.info("Published %d outbox event(s)", published)
+    return published
 
 
 if __name__ == "__main__":
